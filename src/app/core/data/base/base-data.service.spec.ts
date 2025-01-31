@@ -5,7 +5,6 @@
  *
  * http://www.dspace.org/license/
  */
-// eslint-disable-next-line max-classes-per-file
 import {
   fakeAsync,
   tick,
@@ -27,20 +26,12 @@ import { HALEndpointServiceStub } from '../../../shared/testing/hal-endpoint-ser
 import { ObjectCacheServiceStub } from '../../../shared/testing/object-cache-service.stub';
 import { createPaginatedList } from '../../../shared/testing/utils.test';
 import { followLink } from '../../../shared/utils/follow-link-config.model';
-import {
-  link,
-  typedObject,
-} from '../../cache/builders/build-decorators';
 import { RemoteDataBuildService } from '../../cache/builders/remote-data-build.service';
 import { ObjectCacheEntry } from '../../cache/object-cache.reducer';
 import { ObjectCacheService } from '../../cache/object-cache.service';
-import { BITSTREAM } from '../../shared/bitstream.resource-type';
-import { COLLECTION } from '../../shared/collection.resource-type';
 import { HALEndpointService } from '../../shared/hal-endpoint.service';
 import { HALLink } from '../../shared/hal-link.model';
-import { ResourceType } from '../../shared/resource-type';
 import { FindListOptions } from '../find-list-options.model';
-import { PaginatedList } from '../paginated-list.model';
 import { RemoteData } from '../remote-data';
 import { RequestService } from '../request.service';
 import { RequestEntryState } from '../request-entry-state.model';
@@ -65,25 +56,6 @@ class TestService extends BaseDataService<any> {
   }
 }
 
-@typedObject
-class BaseData {
-  static type = new ResourceType('test');
-
-  foo: string;
-
-  _links: {
-    followLink1: HALLink;
-    followLink2: HALLink[];
-    self: HALLink;
-  };
-
-  @link(COLLECTION)
-  followLink1: Observable<any>;
-
-  @link(BITSTREAM, true, 'followLink2')
-  followLink2CustomVariableName: Observable<PaginatedList<any>>;
-}
-
 describe('BaseDataService', () => {
   let service: TestService;
   let requestService;
@@ -94,8 +66,8 @@ describe('BaseDataService', () => {
   let linksToFollow;
   let testScheduler;
   let remoteDataTimestamp: number;
-  let remoteDataMocks: { [responseType: string]: RemoteData<BaseData> };
-  let remoteDataPageMocks: { [responseType: string]: RemoteData<PaginatedList<BaseData>> };
+  let remoteDataMocks: { [responseType: string]: RemoteData<any> };
+  let remoteDataPageMocks: { [responseType: string]: RemoteData<any> };
 
   function initTestService(): TestService {
     requestService = getMockRequestService();
@@ -118,10 +90,10 @@ describe('BaseDataService', () => {
     // as cached values.
     remoteDataTimestamp = new Date().getTime() + 60 * 1000;
     const msToLive = 15 * 60 * 1000;
-    const payload: BaseData = Object.assign(new BaseData(), {
+    const payload = {
       foo: 'bar',
-      followLink1: observableOf({}),
-      followLink2CustomVariableName: observableOf(createPaginatedList()),
+      followLink1: {},
+      followLink2: {},
       _links: {
         self: Object.assign(new HALLink(), {
           href: 'self-test-link',
@@ -138,7 +110,7 @@ describe('BaseDataService', () => {
           }),
         ],
       },
-    });
+    };
     const statusCodeSuccess = 200;
     const statusCodeError = 404;
     const errorMessage = 'not found';

@@ -25,21 +25,17 @@ import { EPersonDataService } from '../../core/eperson/eperson-data.service';
 import { EPerson } from '../../core/eperson/models/eperson.model';
 import { CAPTCHA_NAME } from '../../core/google-recaptcha/google-recaptcha.service';
 import { CookieService } from '../../core/services/cookie.service';
-import {
-  NativeWindowRef,
-  NativeWindowService,
-} from '../../core/services/window.service';
 import { getFirstCompletedRemoteData } from '../../core/shared/operators';
 import {
   hasValue,
   isEmpty,
   isNotEmpty,
 } from '../empty.util';
-import { OrejimeService } from './orejime.service';
+import { KlaroService } from './klaro.service';
 import {
-  ANONYMOUS_STORAGE_NAME_OREJIME,
-  getOrejimeConfiguration,
-} from './orejime-configuration';
+  ANONYMOUS_STORAGE_NAME_KLARO,
+  klaroConfiguration,
+} from './klaro-configuration';
 
 /**
  * Metadata field to store a user's cookie consent preferences in
@@ -67,21 +63,21 @@ const cookiePurposeMessagePrefix = 'cookies.consent.purpose.';
 const updateDebounce = 300;
 
 /**
- * By using this injection token instead of importing directly we can keep Orejime out of the main bundle
+ * By using this injection token instead of importing directly we can keep Klaro out of the main bundle
  */
-const LAZY_OREJIME = new InjectionToken<Promise<any>>(
-  'Lazily loaded Orejime',
+const LAZY_KLARO = new InjectionToken<Promise<any>>(
+  'Lazily loaded Klaro',
   {
     providedIn: 'root',
-    factory: async () => (await import('orejime/dist/orejime')),
+    factory: async () => (await import('klaro/dist/klaro-no-translations')),
   },
 );
 
 /**
- * Browser implementation for the OrejimeService, representing a service for handling Orejime consent preferences and UI
+ * Browser implementation for the KlaroService, representing a service for handling Klaro consent preferences and UI
  */
 @Injectable()
-export class BrowserOrejimeService extends OrejimeService {
+export class BrowserKlaroService extends KlaroService {
 
   private readonly GOOGLE_ANALYTICS_KEY = 'google.analytics.key';
 
@@ -89,22 +85,18 @@ export class BrowserOrejimeService extends OrejimeService {
 
   private readonly GOOGLE_ANALYTICS_SERVICE_NAME = 'google-analytics';
 
-
   /**
-   * Initial Orejime configuration
+   * Initial Klaro configuration
    */
-  orejimeConfig = cloneDeep(getOrejimeConfiguration(this._window));
-
-  private orejimeInstance: any;
+  klaroConfig = cloneDeep(klaroConfiguration);
 
   constructor(
-    @Inject(NativeWindowService) private _window: NativeWindowRef,
     private translateService: TranslateService,
     private authService: AuthService,
     private ePersonService: EPersonDataService,
     private configService: ConfigurationDataService,
     private cookieService: CookieService,
-    @Inject(LAZY_OREJIME) private lazyOrejime: Promise<any>,
+    @Inject(LAZY_KLARO) private lazyKlaro: Promise<any>,
   ) {
     super();
   }
@@ -114,11 +106,12 @@ export class BrowserOrejimeService extends OrejimeService {
    *  - Retrieves the current authenticated user
    *  - Checks if the translation service is ready
    *  - Initialize configuration for users
-   *  - Add and translate orejime configuration messages
+   *  - Add and translate klaro configuration messages
    */
   initialize() {
     if (!environment.info.enablePrivacyStatement) {
-      this.orejimeConfig.translations.zz.consentModal.privacyPolicy.text = 'cookies.consent.content-modal.no-privacy-policy.text';
+      delete this.klaroConfig.privacyPolicy;
+      this.klaroConfig.translations.zy.consentNotice.description = 'cookies.consent.content-notice.description.no-privacy';
     }
 
     const hideGoogleAnalytics$ = this.configService.findByPropertyName(this.GOOGLE_ANALYTICS_KEY).pipe(
@@ -133,16 +126,16 @@ export class BrowserOrejimeService extends OrejimeService {
       ),
     );
 
-    const appsToHide$: Observable<string[]> = observableCombineLatest([hideGoogleAnalytics$, hideRegistrationVerification$]).pipe(
+    const servicesToHide$: Observable<string[]> = observableCombineLatest([hideGoogleAnalytics$, hideRegistrationVerification$]).pipe(
       map(([hideGoogleAnalytics, hideRegistrationVerification]) => {
-        const appsToHideArray: string[] = [];
+        const servicesToHideArray: string[] = [];
         if (hideGoogleAnalytics) {
-          appsToHideArray.push(this.GOOGLE_ANALYTICS_SERVICE_NAME);
+          servicesToHideArray.push(this.GOOGLE_ANALYTICS_SERVICE_NAME);
         }
         if (hideRegistrationVerification) {
-          appsToHideArray.push(CAPTCHA_NAME);
+          servicesToHideArray.push(CAPTCHA_NAME);
         }
-        return appsToHideArray;
+        return servicesToHideArray;
       }),
     );
 
@@ -152,8 +145,8 @@ export class BrowserOrejimeService extends OrejimeService {
 
     const translationServiceReady$ = this.translateService.get('loading.default').pipe(take(1));
 
-    observableCombineLatest([user$, appsToHide$, translationServiceReady$])
-      .subscribe(([user, appsToHide, _]: [EPerson, string[], string]) => {
+    observableCombineLatest([user$, servicesToHide$, translationServiceReady$])
+      .subscribe(([user, servicesToHide, _]: [EPerson, string[], string]) => {
         user = cloneDeep(user);
 
         if (hasValue(user)) {
@@ -161,14 +154,9 @@ export class BrowserOrejimeService extends OrejimeService {
         }
 
         /**
-         * Add all message keys for apps and purposes
+         * Add all message keys for services and purposes
          */
         this.addAppMessages();
-
-        /**
-         * Create categories based on the purposes of the apps
-         */
-        this.createCategories();
 
         /**
          * Subscribe on a message to make sure the translation service is ready
@@ -177,22 +165,20 @@ export class BrowserOrejimeService extends OrejimeService {
          */
         this.translateConfiguration();
 
-        this.orejimeConfig.apps = this.filterConfigApps(appsToHide);
-        this.lazyOrejime.then(({ init }) => {
-          this.orejimeInstance = init(this.orejimeConfig);
-        });
+        this.klaroConfig.services = this.filterConfigServices(servicesToHide);
+        this.lazyKlaro.then(({ setup }) => setup(this.klaroConfig));
       });
   }
 
   /**
-   * Return saved preferences stored in the orejime cookie
+   * Return saved preferences stored in the klaro cookie
    */
   getSavedPreferences(): Observable<any> {
     return this.getUser$().pipe(
       map((user: EPerson) => {
         let storageName;
         if (isEmpty(user)) {
-          storageName = ANONYMOUS_STORAGE_NAME_OREJIME;
+          storageName = ANONYMOUS_STORAGE_NAME_KLARO;
         } else {
           storageName = this.getStorageName(user.uuid);
         }
@@ -206,10 +192,10 @@ export class BrowserOrejimeService extends OrejimeService {
    * @param user The authenticated user
    */
   private initializeUser(user: EPerson) {
-    this.orejimeConfig.callback = debounce((consent, app) => this.updateSettingsForUsers(user), updateDebounce);
-    this.orejimeConfig.cookieName = this.getStorageName(user.uuid);
+    this.klaroConfig.callback = debounce((consent, app) => this.updateSettingsForUsers(user), updateDebounce);
+    this.klaroConfig.storageName = this.getStorageName(user.uuid);
 
-    const anonCookie = this.cookieService.get(ANONYMOUS_STORAGE_NAME_OREJIME);
+    const anonCookie = this.cookieService.get(ANONYMOUS_STORAGE_NAME_KLARO);
     if (hasValue(this.getSettingsForUser(user))) {
       this.restoreSettingsForUsers(user);
     } else if (hasValue(anonCookie)) {
@@ -264,26 +250,26 @@ export class BrowserOrejimeService extends OrejimeService {
    * Show the cookie consent form
    */
   showSettings() {
-    this.orejimeInstance.show();
+    this.lazyKlaro.then(({ show }) => show(this.klaroConfig));
   }
 
   /**
-   * Add message keys for all apps and purposes
+   * Add message keys for all services and purposes
    */
   addAppMessages() {
-    this.orejimeConfig.apps.forEach((app) => {
-      this.orejimeConfig.translations.zz[app.name] = {
+    this.klaroConfig.services.forEach((app) => {
+      this.klaroConfig.translations.zy[app.name] = {
         title: this.getTitleTranslation(app.name),
         description: this.getDescriptionTranslation(app.name),
       };
       app.purposes.forEach((purpose) => {
-        this.orejimeConfig.translations.zz.purposes[purpose] = this.getPurposeTranslation(purpose);
+        this.klaroConfig.translations.zy.purposes[purpose] = this.getPurposeTranslation(purpose);
       });
     });
   }
 
   /**
-   * Translate the translation section from the Orejime configuration
+   * Translate the translation section from the Klaro configuration
    */
   translateConfiguration() {
     /**
@@ -291,26 +277,7 @@ export class BrowserOrejimeService extends OrejimeService {
      */
     this.translateService.setDefaultLang(environment.defaultLanguage);
 
-    this.translate(this.orejimeConfig.translations.zz);
-  }
-
-  /**
-   * Create categories based on the purposes of the apps
-   */
-  createCategories() {
-    this.orejimeConfig.categories = this.orejimeConfig.apps.reduce((accumulator, current) => {
-      let category = accumulator.find((cat) => cat.name === current.purposes[0]);
-      if (!category) {
-        category = {
-          name: current.purposes[0],
-          title: this.translateService.instant(this.getPurposeTranslation(current.purposes[0])),
-          apps: [],
-        };
-        accumulator.push(category);
-      }
-      category.apps.push(current.name);
-      return accumulator;
-    }, []);
+    this.translate(this.klaroConfig.translations.zy);
   }
 
   /**
@@ -328,7 +295,7 @@ export class BrowserOrejimeService extends OrejimeService {
   }
 
   /**
-   * Retrieves the stored Orejime consent settings for a user
+   * Retrieves the stored Klaro consent settings for a user
    * @param user The user to resolve the consent for
    */
   getSettingsForUser(user: EPerson) {
@@ -337,7 +304,7 @@ export class BrowserOrejimeService extends OrejimeService {
   }
 
   /**
-   * Stores the Orejime consent settings for a user in a metadata field
+   * Stores the Klaro consent settings for a user in a metadata field
    * @param user The user to save the settings for
    * @param config The consent settings for the user to save
    */
@@ -377,22 +344,18 @@ export class BrowserOrejimeService extends OrejimeService {
   }
 
   /**
-   * Create the storage name for orejime cookies based on the user's identifier
+   * Create the storage name for klaro cookies based on the user's identifier
    * @param identifier The user's uuid
    */
   getStorageName(identifier: string) {
-    return 'orejime-' + identifier;
+    return 'klaro-' + identifier;
   }
 
   /**
-   * remove apps that should be hidden from the configuration
+   * remove the google analytics from the services
    */
-  private filterConfigApps(appsToHide: string[]) {
-    this.orejimeConfig.categories.forEach((category) => {
-      category.apps = category.apps.filter(service => !appsToHide.some(name => name === service));
-    });
-    this.orejimeConfig.categories = this.orejimeConfig.categories.filter(category => category.apps.length > 0);
-    return this.orejimeConfig.apps.filter(service => !appsToHide.some(name => name === service.name));
+  private filterConfigServices(servicesToHide: string[]): Pick<typeof klaroConfiguration, 'services'>[] {
+    return this.klaroConfig.services.filter(service => !servicesToHide.some(name => name === service.name));
   }
 
 }
